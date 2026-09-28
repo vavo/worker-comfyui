@@ -1,0 +1,169 @@
+name: Temporary ComfyUI amd64 end-to-end validation
+
+on:
+  push:
+    branches:
+      - ci/worker-comfyui-amd64-e2e
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Check out issue 237 PR head
+        uses: actions/checkout@v4
+        with:
+          repository: vavo/worker-comfyui
+          ref: fix/237-custom-node-deps-venv
+          path: issue-237
+
+      - name: Check out issue 232 PR head
+        uses: actions/checkout@v4
+        with:
+          repository: vavo/worker-comfyui
+          ref: feat/232-video-outputs
+          path: issue-232
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
+      - name: Build issue 237 amd64 image
+        run: docker buildx build --platform linux/amd64 --build-arg MODEL_TYPE=none --load --tag worker-comfyui:e2e-237 ./issue-237
+
+      - name: Reproduce issue 237 with VideoHelperSuite
+        run: |
+          docker run -d --name worker-comfyui-237-e2e --platform linux/amd64 --entrypoint bash worker-comfyui:e2e-237 -lc '
+            set -euo pipefail
+            comfy-node-install comfyui-videohelpersuite video-output-bridge
+            cd /comfyui
+            python -u main.py --cpu --disable-auto-launch --disable-metadata --listen --verbose INFO --log-stdout >/tmp/comfyui.log 2>&1 &
+            echo $! >/tmp/comfyui.pid
+            exec tail -f /dev/null
+          '
+          set +e
+          docker exec -i worker-comfyui-237-e2e /opt/venv/bin/python - <<'PY'
+          import json
+          import time
+          from urllib.request import urlopen
+
+          object_info = None
+          for _ in range(180):
+              try:
+                  with urlopen("http://127.0.0.1:8188/object_info", timeout=3) as response:
+                      object_info = json.load(response)
+                  break
+              except Exception:
+                  time.sleep(2)
+
+          if object_info is None:
+              raise RuntimeError("ComfyUI did not become ready after installing custom nodes")
+          if "VHS_VideoCombine" not in object_info:
+              raise RuntimeError("VHS_VideoCombine is missing from /object_info")
+          print("issue 237 passed: VHS_VideoCombine registered in the /opt/venv runtime")
+          PY
+          result=$?
+          if [ "$result" -ne 0 ]; then
+            docker exec worker-comfyui-237-e2e cat /tmp/comfyui.log || true
+          fi
+          exit "$result"
+
+      - name: Remove issue 237 container and image
+        if: always()
+        run: |
+          docker rm -f worker-comfyui-237-e2e || true
+          docker image rm worker-comfyui:e2e-237 || true
+
+      - name: Build issue 232 amd64 image
+        run: docker buildx build --platform linux/amd64 --build-arg MODEL_TYPE=none --load --tag worker-comfyui:e2e-232 ./issue-232
+
+      - name: Start issue 232 worker services
+        run: |
+          docker run -d --name worker-comfyui-232-e2e --platform linux/amd64 --entrypoint bash worker-comfyui:e2e-232 -lc '
+            cd /comfyui
+            python -u main.py --cpu --disable-auto-launch --disable-metadata --listen --verbose INFO --log-stdout >/tmp/comfyui.log 2>&1 &
+            echo $! >/tmp/comfyui.pid
+            exec tail -f /dev/null
+          '
+
+      - name: Submit a real native video workflow through the handler
+        run: |
+          set +e
+          docker exec -i worker-comfyui-232-e2e /opt/venv/bin/python - <<'PY'
+          import base64
+          import json
+          import time
+          from urllib.request import urlopen
+
+          import handler
+
+          object_info = None
+          for _ in range(180):
+              try:
+                  with urlopen("http://127.0.0.1:8188/object_info", timeout=3) as response:
+                      object_info = json.load(response)
+                  break
+              except Exception:
+                  time.sleep(2)
+
+          if object_info is None:
+              raise RuntimeError("ComfyUI did not become ready")
+          for node_name in ("EmptyImage", "CreateVideo", "SaveVideo"):
+              if node_name not in object_info:
+                  raise RuntimeError(f"{node_name} is missing from /object_info")
+
+          save_inputs = object_info["SaveVideo"]["input"]["required"]
+          format_options = save_inputs["format"][0]
+          codec_options = save_inputs["codec"][0]
+          video_format = "mp4" if "mp4" in format_options else format_options[0]
+          video_codec = "h264" if "h264" in codec_options else codec_options[0]
+
+          workflow = {
+              "1": {
+                  "class_type": "EmptyImage",
+                  "inputs": {"width": 16, "height": 16, "batch_size": 2, "color": 0},
+              },
+              "2": {
+                  "class_type": "CreateVideo",
+                  "inputs": {"images": ["1", 0], "fps": 2.0},
+              },
+              "3": {
+                  "class_type": "SaveVideo",
+                  "inputs": {
+                      "video": ["2", 0],
+                      "filename_prefix": "github-actions-e2e",
+                      "format": video_format,
+                      "codec": video_codec,
+                  },
+              },
+          }
+
+          result = handler.handler({"id": "github-actions-e2e", "input": {"workflow": workflow}})
+          videos = result.get("videos", [])
+          if not videos:
+              raise RuntimeError(f"handler returned no videos: {result}")
+          if videos[0].get("type") != "base64":
+              raise RuntimeError(f"video was not returned as base64: {videos[0]}")
+          video_bytes = base64.b64decode(videos[0]["data"])
+          if len(video_bytes) < 32 or b"ftyp" not in video_bytes[:128]:
+              raise RuntimeError("handler returned no valid MP4 video payload")
+          print(f"issue 232 passed: handler returned {len(video_bytes)} bytes from ComfyUI /view")
+          PY
+          result=$?
+          if [ "$result" -ne 0 ]; then
+            docker exec worker-comfyui-232-e2e cat /tmp/comfyui.log || true
+          fi
+          exit "$result"
+
+      - name: Clean up issue 232 container and image
+        if: always()
+        run: |
+          docker rm -f worker-comfyui-232-e2e || true
+          docker image rm worker-comfyui:e2e-232 || true
