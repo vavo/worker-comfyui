@@ -33,12 +33,15 @@ jobs:
 
       - name: Start issue 232 worker services
         run: |
-          docker run -d --name worker-comfyui-232-e2e --platform linux/amd64 --entrypoint bash worker-comfyui:e2e-232 -lc '
+          docker run -d --name worker-comfyui-232-e2e --platform linux/amd64 --volume "$GITHUB_WORKSPACE/issue-232:/repo:ro" --entrypoint bash worker-comfyui:e2e-232 -lc '
             cd /comfyui
             python -u main.py --cpu --disable-auto-launch --disable-metadata --listen --verbose INFO --log-stdout >/tmp/comfyui.log 2>&1 &
             echo $! >/tmp/comfyui.pid
             exec tail -f /dev/null
           '
+
+      - name: Run focused video-output unit tests
+        run: docker exec worker-comfyui-232-e2e bash -lc 'cd /repo && /opt/venv/bin/python -m unittest tests.test_handler.TestHandlerVideoOutputs'
 
       - name: Submit a real native video workflow through the handler
         run: |
