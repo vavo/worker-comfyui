@@ -44,7 +44,19 @@ jobs:
 
       - name: Install issue 237 nodes with the PR script
         run: |
-          docker exec worker-comfyui-237-e2e bash -lc 'set -euo pipefail; cp /repo/scripts/comfy-node-install.sh /usr/local/bin/comfy-node-install; chmod +x /usr/local/bin/comfy-node-install; cd /comfyui; comfy-node-install comfyui-videohelpersuite video-output-bridge; /opt/venv/bin/python -c "import cv2, imageio_ffmpeg; print(\"node dependency imports passed in /opt/venv\")"'
+          docker exec -i worker-comfyui-237-e2e bash -s <<'BASH'
+          set -euo pipefail
+          cp /repo/scripts/comfy-node-install.sh /usr/local/bin/comfy-node-install
+          chmod +x /usr/local/bin/comfy-node-install
+          cd /comfyui
+          comfy-node-install comfyui-videohelpersuite video-output-bridge
+          /opt/venv/bin/python - <<'PY'
+          import cv2
+          import imageio_ffmpeg
+
+          print("node dependency imports passed in /opt/venv")
+          PY
+          BASH
 
       - name: Verify issue 237 node registration
         run: |
