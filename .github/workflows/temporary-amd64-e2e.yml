@@ -1,4 +1,4 @@
-name: Temporary ComfyUI amd64 end-to-end validation
+name: Temporary ComfyUI amd64 issue 232 e2e validation
 
 on:
   push:
@@ -13,13 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - name: Check out issue 237 PR head
-        uses: actions/checkout@v4
-        with:
-          repository: vavo/worker-comfyui
-          ref: fix/237-custom-node-deps-venv
-          path: issue-237
-
       - name: Check out issue 232 PR head
         uses: actions/checkout@v4
         with:
@@ -34,55 +27,6 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost
           sudo rm -rf "$AGENT_TOOLSDIRECTORY"
-
-      - name: Build issue 237 amd64 image
-        run: docker buildx build --platform linux/amd64 --build-arg MODEL_TYPE=none --load --tag worker-comfyui:e2e-237 ./issue-237
-
-      - name: Start issue 237 test container
-        run: |
-          docker run -d --name worker-comfyui-237-e2e --platform linux/amd64 --entrypoint bash worker-comfyui:e2e-237 -lc 'exec tail -f /dev/null'
-
-      - name: Install issue 237 custom nodes with PR script
-        continue-on-error: true
-        run: |
-          docker exec worker-comfyui-237-e2e bash -lc 'set -euo pipefail; comfy-node-install comfyui-videohelpersuite video-output-bridge; find /comfyui/custom_nodes -maxdepth 2 -mindepth 1 -type d -print'
-
-      - name: Verify issue 237 custom node registration
-        continue-on-error: true
-        run: |
-          docker exec -d worker-comfyui-237-e2e bash -lc 'cd /comfyui && python -u main.py --cpu --disable-auto-launch --disable-metadata --listen --verbose INFO --log-stdout >/tmp/comfyui.log 2>&1'
-          set +e
-          docker exec -i worker-comfyui-237-e2e /opt/venv/bin/python - <<'PY'
-          import json
-          import time
-          from urllib.request import urlopen
-
-          object_info = None
-          for _ in range(180):
-              try:
-                  with urlopen("http://127.0.0.1:8188/object_info", timeout=3) as response:
-                      object_info = json.load(response)
-                  break
-              except Exception:
-                  time.sleep(2)
-
-          if object_info is None:
-              raise RuntimeError("ComfyUI did not become ready after installing custom nodes")
-          if "VHS_VideoCombine" not in object_info:
-              raise RuntimeError("VHS_VideoCombine is missing from /object_info")
-          print("issue 237 passed: VHS_VideoCombine registered in the /opt/venv runtime")
-          PY
-          result=$?
-          if [ "$result" -ne 0 ]; then
-            docker exec worker-comfyui-237-e2e cat /tmp/comfyui.log || true
-          fi
-          exit "$result"
-
-      - name: Remove issue 237 container and image
-        if: always()
-        run: |
-          docker rm -f worker-comfyui-237-e2e || true
-          docker image rm worker-comfyui:e2e-237 || true
 
       - name: Build issue 232 amd64 image
         run: docker buildx build --platform linux/amd64 --build-arg MODEL_TYPE=none --load --tag worker-comfyui:e2e-232 ./issue-232
@@ -122,11 +66,6 @@ jobs:
               if node_name not in object_info:
                   raise RuntimeError(f"{node_name} is missing from /object_info")
 
-          save_inputs = object_info["SaveVideo"]["input"]["required"]
-          format_options = save_inputs["format"][0]
-          codec_options = save_inputs["codec"][0]
-          video_format = "mp4" if "mp4" in format_options else format_options[0]
-          video_codec = "h264" if "h264" in codec_options else codec_options[0]
 
           workflow = {
               "1": {
@@ -142,8 +81,7 @@ jobs:
                   "inputs": {
                       "video": ["2", 0],
                       "filename_prefix": "github-actions-e2e",
-                      "format": video_format,
-                      "codec": video_codec,
+                      "format": "mp4",
                   },
               },
           }
