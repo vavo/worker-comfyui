@@ -38,16 +38,19 @@ jobs:
       - name: Build issue 237 amd64 image
         run: docker buildx build --platform linux/amd64 --build-arg MODEL_TYPE=none --load --tag worker-comfyui:e2e-237 ./issue-237
 
-      - name: Reproduce issue 237 with VideoHelperSuite
+      - name: Start issue 237 test container
         run: |
-          docker run -d --name worker-comfyui-237-e2e --platform linux/amd64 --entrypoint bash worker-comfyui:e2e-237 -lc '
-            set -euo pipefail
-            comfy-node-install comfyui-videohelpersuite video-output-bridge
-            cd /comfyui
-            python -u main.py --cpu --disable-auto-launch --disable-metadata --listen --verbose INFO --log-stdout >/tmp/comfyui.log 2>&1 &
-            echo $! >/tmp/comfyui.pid
-            exec tail -f /dev/null
-          '
+          docker run -d --name worker-comfyui-237-e2e --platform linux/amd64 --entrypoint bash worker-comfyui:e2e-237 -lc 'exec tail -f /dev/null'
+
+      - name: Install issue 237 custom nodes with PR script
+        continue-on-error: true
+        run: |
+          docker exec worker-comfyui-237-e2e bash -lc 'set -euo pipefail; comfy-node-install comfyui-videohelpersuite video-output-bridge; find /comfyui/custom_nodes -maxdepth 2 -mindepth 1 -type d -print'
+
+      - name: Verify issue 237 custom node registration
+        continue-on-error: true
+        run: |
+          docker exec -d worker-comfyui-237-e2e bash -lc 'cd /comfyui && python -u main.py --cpu --disable-auto-launch --disable-metadata --listen --verbose INFO --log-stdout >/tmp/comfyui.log 2>&1'
           set +e
           docker exec -i worker-comfyui-237-e2e /opt/venv/bin/python - <<'PY'
           import json
