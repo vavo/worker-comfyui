@@ -46,6 +46,8 @@ jobs:
         run: |
           docker exec -i worker-comfyui-237-e2e bash -s <<'BASH'
           set -euo pipefail
+          cd /repo
+          /opt/venv/bin/python -m unittest tests.test_comfy_node_install
           cp /repo/scripts/comfy-node-install.sh /usr/local/bin/comfy-node-install
           chmod +x /usr/local/bin/comfy-node-install
           cd /comfyui
